@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TicTacToc - 서버 없는 온라인 틱택토</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="panel">
+        <h1>TicTacToc</h1>
+        <p class="subtitle">서버/DB 없이 즐기는 온라인 + AI 틱택토</p>
+
+        <div class="mode-switch" role="tablist" aria-label="게임 모드 선택">
+          <button id="mode-online" class="mode-btn active" data-mode="online">온라인 대전</button>
+          <button id="mode-ai" class="mode-btn" data-mode="ai">컴퓨터 대전</button>
+        </div>
+
+        <div id="online-controls" class="controls-group">
+          <label for="room-code">룸 코드</label>
+          <div class="room-row">
+            <input id="room-code" maxlength="24" placeholder="예: korea-fun-01" />
+            <button id="btn-generate">생성</button>
+          </div>
+          <div class="room-row">
+            <button id="btn-join" class="primary">입장/연결</button>
+            <button id="btn-leave">나가기</button>
+          </div>
+          <small>
+            친구와 같은 룸 코드를 입력하면 연결됩니다.
+            서버 없이 브라우저끼리 직접 통신합니다.
+          </small>
+        </div>
+
+        <div id="ai-controls" class="controls-group hidden">
+          <label for="ai-level">난이도</label>
+          <select id="ai-level">
+            <option value="easy">쉬움 (랜덤)</option>
+            <option value="hard" selected>어려움 (최적 플레이)</option>
+          </select>
+          <small>당신은 X, 컴퓨터는 O로 플레이합니다.</small>
+        </div>
+
+        <div class="status-wrap">
+          <p id="status-text">모드를 선택하고 시작하세요.</p>
+          <button id="btn-reset" class="primary">현재 판 다시 시작</button>
+        </div>
+      </section>
+
+      <section class="board-panel">
+        <div id="board" class="board" aria-label="틱택토 보드"></div>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
