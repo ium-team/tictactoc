@@ -119,6 +119,10 @@ button.primary {
   grid-template-columns: 1fr 1fr;
 }
 
+.room-row.single {
+  grid-template-columns: 1fr;
+}
+
 .status-wrap {
   margin-top: 18px;
   display: grid;

@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TicTacToc - 서버 없는 온라인 틱택토</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
@@ -27,6 +28,9 @@
             <button id="btn-join" class="primary">입장/연결</button>
             <button id="btn-leave">나가기</button>
           </div>
+          <div class="room-row single">
+            <button id="btn-quick" class="primary">빠른 대전</button>
+          </div>
           <small>
             친구와 같은 룸 코드를 입력하면 연결됩니다.
             서버 없이 브라우저끼리 직접 통신합니다.
@@ -45,6 +49,10 @@
         <div class="status-wrap">
           <p id="status-text">모드를 선택하고 시작하세요.</p>
           <button id="btn-reset" class="primary">현재 판 다시 시작</button>
+          <div id="rematch-actions" class="room-row hidden">
+            <button id="btn-rematch-same">현재 사람이랑 다시하기</button>
+            <button id="btn-rematch-new">새로운 사람이랑 하기</button>
+          </div>
         </div>
       </section>
 
