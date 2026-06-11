@@ -3,96 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0a0b0a" />
-    <meta name="description" content="로그인 없이 링크 하나로 친구와 즐기는 네 가지 틱택토" />
-    <title>TIC TAC TOC — 링크 하나로 바로 대결</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23ffffff'/%3E%3Cpath d='M12 8h16v16H12zm24 0h16v16H36zM12 32h16v16H12zm24 0h16v16H36z' fill='%232563eb'/%3E%3C/svg%3E" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="description" content="로그인 없이 링크 하나로 친구와 즐기는 틱택토" />
+    <title>TIC TAC TOC</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='white'/%3E%3Cpath d='M12 8h16v16H12zm24 0h16v16H36zM12 32h16v16H12zm24 0h16v16H36z' fill='%232563eb'/%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Inter:wght@500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <div class="noise"></div>
-    <header class="topbar">
-      <button class="brand" id="brand-button" aria-label="로비로 이동">
-        <span class="brand-mark"><i></i><i></i><i></i><i></i></span>
-        <span>TIC TAC TOC</span>
-      </button>
-      <div class="topbar-actions">
-        <span class="network-pill"><i></i> 서버비 0원 · P2P</span>
-        <button class="icon-button" id="sound-button" aria-label="소리 켜기/끄기">SOUND ON</button>
-      </div>
-    </header>
-
-    <main>
-      <section id="lobby-view" class="view lobby-view">
-        <div class="hero-copy">
-          <p class="eyebrow">NO LOGIN · NO DOWNLOAD · JUST PLAY</p>
-          <h1>링크를 던지고,<br /><em>한 수를 둬.</em></h1>
-          <p class="hero-description">친구에게 링크 하나만 보내세요. 클래식부터 3D까지, 기다림 없이 바로 시작합니다.</p>
-          <div class="hero-actions">
-            <button class="primary-button" id="create-button">새 게임 만들기 <span>↗</span></button>
-            <button class="text-button" id="practice-button">혼자 연습하기 <span>→</span></button>
-          </div>
-        </div>
-        <div class="hero-board" aria-hidden="true">
-          <div class="orbit orbit-one"></div>
-          <div class="orbit orbit-two"></div>
-          <div class="giant-grid">
-            <span></span><span class="giant-x">×</span><span></span>
-            <span class="giant-o">○</span><span></span><span></span>
-            <span></span><span></span><span class="giant-x small">×</span>
-          </div>
-          <p>YOUR MOVE</p>
-        </div>
-        <div class="mode-strip" id="mode-strip"></div>
-      </section>
-
-      <section id="room-view" class="view room-view hidden">
-        <aside class="room-sidebar">
-          <button class="back-button" id="back-button">← 로비</button>
-          <p class="eyebrow" id="room-mode-label">CLASSIC 3×3</p>
-          <h2 id="room-mode-name">클래식</h2>
-          <p class="mode-description" id="room-description"></p>
-
-          <div class="player-list">
-            <div class="player active" id="player-x">
-              <strong><span class="piece x-piece">×</span><span id="name-x">나</span></strong>
-              <span id="state-x">준비</span>
-            </div>
-            <div class="player" id="player-o">
-              <strong><span class="piece o-piece">○</span><span id="name-o">친구</span></strong>
-              <span id="state-o">대기 중</span>
-            </div>
-          </div>
-
-          <div class="invite-block" id="invite-block">
-            <span>친구 초대 링크</span>
-            <button id="copy-button"><strong id="room-code-label">ROOM</strong><b>복사</b></button>
-            <small id="connection-label">상대를 기다리는 중...</small>
-          </div>
-          <button class="secondary-button" id="restart-button">새 판 시작</button>
-        </aside>
-
-        <section class="game-stage">
-          <div class="game-status">
-            <div>
-              <span id="round-label">ROUND 01</span>
-              <strong id="status-label">친구를 기다리고 있습니다</strong>
-            </div>
-            <div class="timer" id="timer"><span id="timer-value">8</span><i></i></div>
-          </div>
-          <div class="layer-tabs hidden" id="layer-tabs"></div>
-          <div class="board-shell" id="board-shell">
-            <div class="board" id="board" aria-label="틱택토 게임 보드"></div>
-          </div>
-          <p class="board-hint" id="board-hint">빈 칸을 선택해 수를 두세요</p>
-        </section>
-      </section>
-    </main>
-
-    <div class="toast" id="toast" role="status"></div>
-    <script type="module" src="./app.js"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
