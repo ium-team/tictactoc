@@ -1,964 +1,348 @@
 import { joinRoom } from "https://esm.sh/trystero@0.20.1";
+import { MODES, createGame, findComputerMove, loseOnTime, playMove } from "./game.js";
 
-const appId = "tictactoc-p2p-v1";
-const quickQueueRoomCode = "tictactoc-quick-v1";
-const rematchTimeoutMs = 10_000;
-const trysteroConfig = {
-  appId,
-  // Public Nostr relays for Trystero default strategy. Multiple relays
-  // improve resiliency when a subset is temporarily unavailable.
+const NETWORK_CONFIG = {
+  appId: "tic-tac-toc-complete-v1",
   relayUrls: ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net"],
-  // 학교/기업망처럼 NAT가 강한 환경을 대비해 TURN(TCP/TLS) 우선 경로를 포함.
-  rtcConfig: {
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
-      { urls: "stun:global.stun.twilio.com:3478" },
-      {
-        urls: [
-          "turn:openrelay.metered.ca:80?transport=tcp",
-          "turn:openrelay.metered.ca:443?transport=tcp",
-          "turns:openrelay.metered.ca:443?transport=tcp",
-        ],
-        username: "openrelayproject",
-        credential: "openrelayproject",
-      },
-    ],
-  },
+  rtcConfig: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] },
 };
-
-const winLines = [
-  [0, 1, 2],
-  [3, 4, 5],
-  [6, 7, 8],
-  [0, 3, 6],
-  [1, 4, 7],
-  [2, 5, 8],
-  [0, 4, 8],
-  [2, 4, 6],
-];
-
-function createClientId() {
-  if (typeof crypto === "undefined" || typeof crypto.randomUUID !== "function") {
-    throw new Error("이 브라우저는 randomUUID를 지원하지 않습니다.");
-  }
-  return crypto.randomUUID().slice(0, 8);
-}
 
 const state = {
-  mode: "online",
-  board: Array(9).fill(null),
-  turn: "X",
-  locked: false,
-  winner: null,
-  winLine: null,
-  peerRole: null,
-  peerCount: 0,
+  selectedMode: "classic",
+  game: createGame(),
+  room: null,
   roomCode: "",
-  aiLevel: "hard",
-  mySeed: Math.floor(Math.random() * 1_000_000_000),
-  peerSeed: null,
-  clientId: "",
-  quickWaiting: false,
-  quickSince: 0,
-  rematch: {
-    active: false,
-    myVote: null,
-    peerVote: null,
-    deadline: 0,
-    timeoutId: null,
-    autoQuickAfterDisconnect: false,
-  },
+  actions: null,
+  peers: new Set(),
+  myId: crypto.randomUUID().slice(0, 8),
+  peerIds: new Map(),
+  myRole: "X",
+  roleReady: false,
+  practice: false,
+  layer: 0,
+  round: 1,
+  turnEndsAt: 0,
+  timerId: null,
+  sound: true,
 };
 
+const $ = (id) => document.getElementById(id);
 const els = {
-  board: document.getElementById("board"),
-  status: document.getElementById("status-text"),
-  roomCode: document.getElementById("room-code"),
-  onlineControls: document.getElementById("online-controls"),
-  aiControls: document.getElementById("ai-controls"),
-  aiLevel: document.getElementById("ai-level"),
-  modeButtons: Array.from(document.querySelectorAll(".mode-btn")),
-  rematchActions: document.getElementById("rematch-actions"),
-  btnGenerate: document.getElementById("btn-generate"),
-  btnJoin: document.getElementById("btn-join"),
-  btnQuick: document.getElementById("btn-quick"),
-  btnLeave: document.getElementById("btn-leave"),
-  btnReset: document.getElementById("btn-reset"),
-  btnRematchSame: document.getElementById("btn-rematch-same"),
-  btnRematchNew: document.getElementById("btn-rematch-new"),
+  lobby: $("lobby-view"), room: $("room-view"), modeStrip: $("mode-strip"),
+  board: $("board"), boardShell: $("board-shell"), layerTabs: $("layer-tabs"),
+  modeLabel: $("room-mode-label"), modeName: $("room-mode-name"), description: $("room-description"),
+  playerX: $("player-x"), playerO: $("player-o"), nameX: $("name-x"), nameO: $("name-o"),
+  stateX: $("state-x"), stateO: $("state-o"), roomCode: $("room-code-label"),
+  connection: $("connection-label"), status: $("status-label"), hint: $("board-hint"),
+  timer: $("timer"), timerValue: $("timer-value"), round: $("round-label"), toast: $("toast"),
 };
 
-let room = null;
-let sendMove = null;
-let sendReset = null;
-let sendMeta = null;
-let roomHelloHeartbeat = null;
-let roomConnectTimeout = null;
-
-let quickQueueRoom = null;
-let quickSend = null;
-let quickHeartbeat = null;
-let quickProposingTo = null;
-let quickProposeTimeout = null;
-let quickAcceptedFrom = null;
-let quickAcceptTimeout = null;
-let quickMatchedWith = null;
-const quickPeers = new Map();
-
-function setStatus(text) {
-  els.status.textContent = text;
+function randomRoom() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  return Array.from({ length: 6 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
 }
 
-function disableOnlineWithError(message) {
-  setStatus(`오류: ${message}`);
-  els.roomCode.disabled = true;
-  els.btnGenerate.disabled = true;
-  els.btnJoin.disabled = true;
-  els.btnQuick.disabled = true;
-  els.btnLeave.disabled = true;
+function showToast(message) {
+  els.toast.textContent = message;
+  els.toast.classList.add("show");
+  clearTimeout(showToast.timeout);
+  showToast.timeout = setTimeout(() => els.toast.classList.remove("show"), 1800);
 }
 
-function setOnlineError(message) {
-  setStatus(`오류: ${message}`);
+function beep(frequency = 520, duration = .06) {
+  if (!state.sound) return;
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return;
+  const context = new AudioContext();
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.frequency.value = frequency;
+  gain.gain.setValueAtTime(.035, context.currentTime);
+  gain.gain.exponentialRampToValueAtTime(.001, context.currentTime + duration);
+  oscillator.connect(gain).connect(context.destination);
+  oscillator.start();
+  oscillator.stop(context.currentTime + duration);
 }
 
-function createBoard() {
-  els.board.innerHTML = "";
-  for (let i = 0; i < 9; i += 1) {
-    const btn = document.createElement("button");
-    btn.className = "cell";
-    btn.dataset.idx = String(i);
-    btn.addEventListener("click", onCellClick);
-    els.board.appendChild(btn);
-  }
-}
-
-function isGameOver() {
-  return state.winner !== null;
-}
-
-function rematchSecondsLeft() {
-  return Math.max(0, Math.ceil((state.rematch.deadline - Date.now()) / 1000));
-}
-
-function voteText(vote) {
-  if (vote === "same") {
-    return "다시하기";
-  }
-  if (vote === "new") {
-    return "새 상대";
-  }
-  return "대기";
-}
-
-function renderRematchActions() {
-  const visible = state.mode === "online" && isGameOver() && room && state.peerCount > 0;
-  els.rematchActions.classList.toggle("hidden", !visible);
-
-  if (!visible) {
-    return;
-  }
-
-  els.btnRematchSame.disabled = state.rematch.myVote === "same";
-  els.btnRematchNew.disabled = state.rematch.myVote === "new";
-}
-
-function render() {
-  const cells = Array.from(els.board.children);
-  cells.forEach((cell, idx) => {
-    const mark = state.board[idx];
-    cell.textContent = mark || "";
-    cell.disabled = state.locked || Boolean(mark) || !isMyTurn();
-    cell.classList.toggle("x", mark === "X");
-    cell.classList.toggle("o", mark === "O");
-    cell.classList.toggle("win", state.winLine?.includes(idx) || false);
-  });
-
-  const onlineEnded = state.mode === "online" && room && isGameOver();
-  els.btnReset.disabled = Boolean(onlineEnded);
-  renderRematchActions();
-
-  if (state.mode === "online" && isGameOver() && state.rematch.active) {
-    setStatus(
-      `재경기 투표 - 나:${voteText(state.rematch.myVote)} / 상대:${voteText(state.rematch.peerVote)} (${rematchSecondsLeft()}초)`
-    );
-    return;
-  }
-
-  if (state.winner === "draw") {
-    setStatus("무승부입니다.");
-    return;
-  }
-
-  if (state.winner) {
-    setStatus(`${state.winner} 승리!`);
-    return;
-  }
-
-  if (state.mode === "ai") {
-    setStatus(state.turn === "X" ? "당신 차례 (X)" : "컴퓨터 생각 중...");
-    return;
-  }
-
-  if (state.quickWaiting && !room) {
-    setStatus("빠른 대전 매칭 중입니다...");
-    return;
-  }
-
-  if (!room) {
-    setStatus("룸 코드를 입력하거나 빠른 대전을 누르세요.");
-    return;
-  }
-
-  if (state.peerCount === 0) {
-    setStatus("상대를 기다리는 중입니다...");
-    return;
-  }
-
-  if (!state.peerRole) {
-    setStatus("역할 동기화 중입니다...");
-    return;
-  }
-
-  const turnText = state.turn === state.peerRole ? "당신 차례" : "상대 차례";
-  setStatus(`${turnText} (${state.turn})`);
-}
-
-function checkWinner(board) {
-  for (const line of winLines) {
-    const [a, b, c] = line;
-    if (board[a] && board[a] === board[b] && board[b] === board[c]) {
-      return { winner: board[a], line };
-    }
-  }
-
-  if (board.every(Boolean)) {
-    return { winner: "draw", line: null };
-  }
-
-  return { winner: null, line: null };
-}
-
-function maybeStartRematchVoting() {
-  if (state.mode !== "online" || !room || state.peerCount === 0) {
-    return;
-  }
-
-  if (state.rematch.active) {
-    return;
-  }
-
-  state.rematch.active = true;
-  state.rematch.myVote = null;
-  state.rematch.peerVote = null;
-  state.rematch.deadline = Date.now() + rematchTimeoutMs;
-  state.rematch.autoQuickAfterDisconnect = false;
-
-  if (state.rematch.timeoutId) {
-    window.clearTimeout(state.rematch.timeoutId);
-  }
-
-  state.rematch.timeoutId = window.setTimeout(() => {
-    if (!state.rematch.active) {
-      return;
-    }
-
-    if (state.rematch.myVote === "same" && state.rematch.peerVote === "same") {
-      return;
-    }
-
-    const autoQuick = state.rematch.autoQuickAfterDisconnect;
-    clearRematchState();
-    disconnectRoom();
-    state.peerRole = null;
-    resetBoard(false);
-    render();
-
-    if (autoQuick && state.mode === "online") {
-      startQuickMatch();
-    }
-  }, rematchTimeoutMs);
-}
-
-function clearRematchState() {
-  state.rematch.active = false;
-  state.rematch.myVote = null;
-  state.rematch.peerVote = null;
-  state.rematch.deadline = 0;
-  state.rematch.autoQuickAfterDisconnect = false;
-
-  if (state.rematch.timeoutId) {
-    window.clearTimeout(state.rematch.timeoutId);
-    state.rematch.timeoutId = null;
-  }
-}
-
-function stopRoomSignals() {
-  if (roomHelloHeartbeat) {
-    window.clearInterval(roomHelloHeartbeat);
-    roomHelloHeartbeat = null;
-  }
-  if (roomConnectTimeout) {
-    window.clearTimeout(roomConnectTimeout);
-    roomConnectTimeout = null;
-  }
-}
-
-function evaluateRematchAgreement() {
-  if (!state.rematch.active) {
-    return;
-  }
-
-  if (state.rematch.myVote === "same" && state.rematch.peerVote === "same") {
-    clearRematchState();
-    resetBoard(false);
-    render();
-  }
-}
-
-function applyMove(idx, mark) {
-  if (state.locked || state.board[idx]) {
-    return false;
-  }
-
-  state.board[idx] = mark;
-  state.turn = mark === "X" ? "O" : "X";
-
-  const result = checkWinner(state.board);
-  if (result.winner) {
-    state.winner = result.winner;
-    state.winLine = result.line;
-    state.locked = true;
-    maybeStartRematchVoting();
-  }
-
-  render();
-  return true;
-}
-
-function resetBoard(send = true) {
-  state.board = Array(9).fill(null);
-  state.turn = "X";
-  state.winner = null;
-  state.winLine = null;
-  state.locked = false;
-  clearRematchState();
-  render();
-
-  if (state.mode === "online" && room && sendReset && send) {
-    sendReset({ t: Date.now() });
-  }
-}
-
-function isMyTurn() {
-  if (state.winner || state.locked) {
-    return false;
-  }
-
-  if (state.mode === "ai") {
-    return state.turn === "X";
-  }
-
-  if (!room || state.peerCount === 0 || !state.peerRole) {
-    return false;
-  }
-
-  return state.turn === state.peerRole;
-}
-
-function onCellClick(e) {
-  const idx = Number(e.currentTarget.dataset.idx);
-
-  if (state.mode === "ai") {
-    if (!isMyTurn()) {
-      return;
-    }
-
-    const ok = applyMove(idx, "X");
-    if (ok && !state.winner) {
-      maybeComputerMove();
-    }
-    return;
-  }
-
-  if (!isMyTurn()) {
-    return;
-  }
-
-  const myMark = state.peerRole;
-  const ok = applyMove(idx, myMark);
-  if (!ok) {
-    return;
-  }
-
-  if (sendMove) {
-    sendMove({ idx, mark: myMark });
-  }
-}
-
-function randomRoomCode() {
-  const seed = Math.random().toString(36).slice(2, 8);
-  return `room-${seed}`;
-}
-
-function normalizeRoomCode(input) {
-  return input.trim().toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 24);
-}
-
-function computeRole() {
-  if (!Number.isInteger(state.peerSeed)) {
-    return;
-  }
-
-  if (state.mySeed === state.peerSeed) {
-    state.mySeed += 1;
-  }
-
-  state.peerRole = state.mySeed < state.peerSeed ? "X" : "O";
-}
-
-function buildPrivateRoomCode(a, b) {
-  const sorted = [a, b].sort();
-  return `auto-${sorted[0]}-${sorted[1]}`;
-}
-
-function stopQuickMatch() {
-  if (quickHeartbeat) {
-    window.clearInterval(quickHeartbeat);
-    quickHeartbeat = null;
-  }
-
-  if (quickProposeTimeout) {
-    window.clearTimeout(quickProposeTimeout);
-    quickProposeTimeout = null;
-  }
-  if (quickAcceptTimeout) {
-    window.clearTimeout(quickAcceptTimeout);
-    quickAcceptTimeout = null;
-  }
-
-  if (quickQueueRoom) {
-    quickQueueRoom.leave();
-  }
-
-  quickQueueRoom = null;
-  quickSend = null;
-  quickProposingTo = null;
-  quickAcceptedFrom = null;
-  quickMatchedWith = null;
-  quickPeers.clear();
-  state.quickWaiting = false;
-}
-
-function broadcastQuickHello() {
-  if (!quickSend || !state.quickWaiting) {
-    return;
-  }
-
-  quickSend({
-    type: "hello",
-    from: state.clientId,
-    waitingSince: state.quickSince,
-  });
-}
-
-function tryQuickPropose() {
-  if (!quickSend || !state.quickWaiting || quickMatchedWith || quickProposingTo) {
-    return;
-  }
-
-  const olderCandidates = Array.from(quickPeers.values())
-    .filter((peer) => {
-      if (Date.now() - peer.seenAt >= 4_000) {
-        return false;
-      }
-      if (peer.waitingSince < state.quickSince) {
-        return true;
-      }
-      if (peer.waitingSince === state.quickSince) {
-        return peer.id.localeCompare(state.clientId) < 0;
-      }
-      return false;
-    })
-    .sort((a, b) => a.waitingSince - b.waitingSince || a.id.localeCompare(b.id));
-
-  const target = olderCandidates[0];
-  if (!target) {
-    return;
-  }
-
-  quickProposingTo = target.id;
-  quickSend({ type: "propose", from: state.clientId, to: target.id });
-
-  quickProposeTimeout = window.setTimeout(() => {
-    if (quickProposingTo === target.id) {
-      quickProposingTo = null;
-      tryQuickPropose();
-    }
-  }, 2500);
-}
-
-function finalizeQuickMatch(opponentClientId) {
-  if (quickMatchedWith || !state.quickWaiting) {
-    return;
-  }
-
-  quickMatchedWith = opponentClientId;
-  state.quickWaiting = false;
-  quickProposingTo = null;
-  quickAcceptedFrom = null;
-  if (quickProposeTimeout) {
-    window.clearTimeout(quickProposeTimeout);
-    quickProposeTimeout = null;
-  }
-  if (quickAcceptTimeout) {
-    window.clearTimeout(quickAcceptTimeout);
-    quickAcceptTimeout = null;
-  }
-
-  const privateRoomCode = buildPrivateRoomCode(state.clientId, opponentClientId);
-  stopQuickMatch();
-  connectRoom(privateRoomCode);
-}
-
-function handleQuickMessage(payload) {
-  if (!payload || typeof payload !== "object") {
-    return;
-  }
-
-  const from = payload.from;
-  if (!from || from === state.clientId) {
-    return;
-  }
-
-  if (payload.type === "hello" && Number.isInteger(payload.waitingSince)) {
-    quickPeers.set(from, {
-      id: from,
-      waitingSince: payload.waitingSince,
-      seenAt: Date.now(),
-    });
-    tryQuickPropose();
-    render();
-    return;
-  }
-
-  if (payload.type === "propose" && payload.to === state.clientId) {
-    if (!state.quickWaiting || quickMatchedWith) {
-      return;
-    }
-
-    const proposer = quickPeers.get(from);
-    // proposer는 나보다 "늦게" 대기 시작한 피어여야 한다.
-    if (
-      proposer &&
-      (proposer.waitingSince < state.quickSince ||
-        (proposer.waitingSince === state.quickSince && proposer.id.localeCompare(state.clientId) < 0))
-    ) {
-      return;
-    }
-
-    if (quickSend) {
-      quickSend({ type: "accept", from: state.clientId, to: from });
-    }
-    quickAcceptedFrom = from;
-    if (quickAcceptTimeout) {
-      window.clearTimeout(quickAcceptTimeout);
-    }
-    quickAcceptTimeout = window.setTimeout(() => {
-      if (quickAcceptedFrom === from) {
-        quickAcceptedFrom = null;
-      }
-    }, 3000);
-    return;
-  }
-
-  if (payload.type === "accept" && payload.to === state.clientId && from === quickProposingTo) {
-    if (quickSend) {
-      quickSend({ type: "confirm", from: state.clientId, to: from });
-    }
-    finalizeQuickMatch(from);
-    return;
-  }
-
-  if (payload.type === "confirm" && payload.to === state.clientId && from === quickAcceptedFrom) {
-    finalizeQuickMatch(from);
-  }
-}
-
-function startQuickMatch() {
-  if (state.mode !== "online") {
-    return;
-  }
-
-  stopQuickMatch();
-  disconnectRoom();
-  state.peerRole = null;
-  state.quickWaiting = true;
-  state.quickSince = Date.now();
-  resetBoard(false);
-
-  quickQueueRoom = joinRoom(trysteroConfig, quickQueueRoomCode, {
-    onJoinError: () => {
-      state.quickWaiting = false;
-      setOnlineError("빠른 대전 연결에 실패했습니다. 잠시 후 다시 시도하세요.");
-      render();
-    },
-  });
-  const action = quickQueueRoom.makeAction("quick");
-  quickSend = action[0];
-  const getQuick = action[1];
-
-  quickQueueRoom.onPeerJoin(() => {
-    broadcastQuickHello();
-    tryQuickPropose();
-    render();
-  });
-
-  quickQueueRoom.onPeerLeave((peerId) => {
-    if (peerId) {
-      quickPeers.delete(peerId);
-      if (quickAcceptedFrom === peerId) {
-        quickAcceptedFrom = null;
-      }
-      if (quickProposingTo === peerId) {
-        quickProposingTo = null;
-      }
-    } else {
-      quickProposingTo = null;
-    }
-    quickProposingTo = null;
-    tryQuickPropose();
-    render();
-  });
-
-  getQuick((payload) => {
-    handleQuickMessage(payload);
-  });
-
-  quickHeartbeat = window.setInterval(() => {
-    broadcastQuickHello();
-    tryQuickPropose();
-    render();
-  }, 1500);
-
-  broadcastQuickHello();
-  render();
-}
-
-function connectRoom(roomCode) {
-  stopQuickMatch();
-  disconnectRoom();
-
-  state.roomCode = roomCode;
-  state.peerRole = null;
-  state.peerCount = 0;
-  state.peerSeed = null;
-  state.mySeed = Math.floor(Math.random() * 1_000_000_000);
-
-  room = joinRoom(trysteroConfig, roomCode, {
-    onJoinError: () => {
-      disconnectRoom();
-      state.peerRole = null;
-      resetBoard(false);
-      setOnlineError("룸 연결에 실패했습니다. 룸 코드를 확인하고 다시 시도하세요.");
-      render();
-    },
-  });
-
-  const actionMove = room.makeAction("move");
-  sendMove = actionMove[0];
-  const getMove = actionMove[1];
-
-  const actionReset = room.makeAction("reset");
-  sendReset = actionReset[0];
-  const getReset = actionReset[1];
-
-  const actionMeta = room.makeAction("meta");
-  sendMeta = actionMeta[0];
-  const getMeta = actionMeta[1];
-
-  stopRoomSignals();
-  roomHelloHeartbeat = window.setInterval(() => {
-    if (sendMeta) {
-      sendMeta({ type: "hello", seed: state.mySeed });
-    }
-  }, 1000);
-
-  roomConnectTimeout = window.setTimeout(() => {
-    if (!room || state.peerCount > 0) {
-      return;
-    }
-    disconnectRoom();
-    state.peerRole = null;
-    resetBoard(false);
-    setOnlineError("상대를 찾지 못했습니다. 네트워크 상태를 확인하고 다시 시도하세요.");
-  }, 15000);
-
-  room.onPeerJoin(() => {
-    state.peerCount += 1;
-    if (roomConnectTimeout) {
-      window.clearTimeout(roomConnectTimeout);
-      roomConnectTimeout = null;
-    }
-    if (state.peerCount > 1) {
-      setStatus("현재는 1:1만 지원합니다. 두 명만 같은 룸에 접속하세요.");
-    }
-
-    sendMeta({ type: "hello", seed: state.mySeed });
-    render();
-  });
-
-  room.onPeerLeave(() => {
-    state.peerCount = Math.max(0, state.peerCount - 1);
-
-    if (state.peerCount === 0) {
-      state.peerRole = null;
-      state.peerSeed = null;
-      clearRematchState();
-      resetBoard(false);
-    }
-
-    render();
-  });
-
-  getMove((payload) => {
-    if (!payload || typeof payload.idx !== "number") {
-      return;
-    }
-
-    if (payload.mark !== "X" && payload.mark !== "O") {
-      return;
-    }
-
-    applyMove(payload.idx, payload.mark);
-  });
-
-  getReset(() => {
-    resetBoard(false);
-  });
-
-  getMeta((payload) => {
-    if (!payload || typeof payload !== "object") {
-      return;
-    }
-
-    if (payload.type === "hello" && Number.isInteger(payload.seed)) {
-      if (state.peerCount === 0) {
-        state.peerCount = 1;
-      }
-      if (roomConnectTimeout) {
-        window.clearTimeout(roomConnectTimeout);
-        roomConnectTimeout = null;
-      }
-      state.peerSeed = payload.seed;
-      computeRole();
-      render();
-      return;
-    }
-
-    if (payload.type === "rematch_vote") {
-      state.rematch.peerVote = payload.vote === "same" ? "same" : "new";
-      if (!state.rematch.active) {
-        maybeStartRematchVoting();
-      }
-      evaluateRematchAgreement();
-      render();
-    }
-  });
-
-  sendMeta({ type: "hello", seed: state.mySeed });
-  resetBoard(false);
-  render();
-}
-
-function disconnectRoom() {
-  clearRematchState();
-  stopRoomSignals();
-
+function setUrl(room = "", mode = state.selectedMode) {
+  const url = new URL(location.href);
   if (room) {
-    room.leave();
+    url.searchParams.set("room", room);
+    url.searchParams.set("mode", mode);
+  } else {
+    url.search = "";
   }
+  history.replaceState({}, "", url);
+}
 
-  room = null;
-  sendMove = null;
-  sendReset = null;
-  sendMeta = null;
-  state.peerCount = 0;
-  state.peerSeed = null;
+function renderModes() {
+  els.modeStrip.innerHTML = Object.values(MODES).map((mode, index) => `
+    <button class="mode-option ${mode.id === state.selectedMode ? "active" : ""}" data-mode="${mode.id}">
+      <span>0${index + 1} · ${mode.short}</span><strong>${mode.name}</strong>
+    </button>`).join("");
+  els.modeStrip.querySelectorAll("button").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selectedMode = button.dataset.mode;
+      renderModes();
+      beep(360);
+    });
+  });
 }
 
 function setMode(mode) {
-  if (mode === state.mode) {
-    return;
-  }
-
-  state.mode = mode;
-
-  els.modeButtons.forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.mode === mode);
-  });
-
-  const isOnline = mode === "online";
-  els.onlineControls.classList.toggle("hidden", !isOnline);
-  els.aiControls.classList.toggle("hidden", isOnline);
-
-  if (!isOnline) {
-    stopQuickMatch();
-    disconnectRoom();
-    state.peerRole = null;
-  }
-
-  resetBoard(false);
-  render();
+  state.selectedMode = MODES[mode] ? mode : "classic";
+  state.game = createGame(state.selectedMode);
+  state.layer = 0;
+  const config = MODES[state.selectedMode];
+  els.modeLabel.textContent = config.short;
+  els.modeName.textContent = config.name;
+  els.description.textContent = config.description;
+  els.layerTabs.classList.toggle("hidden", config.layers === 1);
+  els.timer.classList.toggle("visible", config.turnSeconds > 0);
+  renderLayerTabs();
+  renderBoard();
+  renderStatus();
 }
 
-function availableMoves(board) {
-  return board.map((v, i) => (v ? -1 : i)).filter((n) => n >= 0);
+function renderLayerTabs() {
+  if (MODES[state.selectedMode].layers === 1) return;
+  els.layerTabs.innerHTML = [0, 1, 2].map((layer) =>
+    `<button class="${state.layer === layer ? "active" : ""}" data-layer="${layer}">LAYER 0${layer + 1}</button>`
+  ).join("");
+  els.layerTabs.querySelectorAll("button").forEach((button) => button.addEventListener("click", () => {
+    els.boardShell.classList.add("switching");
+    setTimeout(() => {
+      state.layer = Number(button.dataset.layer);
+      renderLayerTabs();
+      renderBoard();
+      els.boardShell.classList.remove("switching");
+    }, 140);
+  }));
 }
 
-function bestMove(board, isMaximizing) {
-  const result = checkWinner(board);
-  if (result.winner === "O") {
-    return { score: 1 };
-  }
+function canPlay() {
+  return !state.game.winner &&
+    (state.practice || state.peers.size > 0) &&
+    (state.practice || state.roleReady) &&
+    state.game.turn === state.myRole;
+}
 
-  if (result.winner === "X") {
-    return { score: -1 };
-  }
+function renderBoard(lastIndex = -1) {
+  const offset = state.selectedMode === "cube" ? state.layer * 9 : 0;
+  els.board.innerHTML = Array.from({ length: 9 }, (_, localIndex) => {
+    const index = offset + localIndex;
+    const mark = state.game.board[index];
+    const fading = MODES[state.selectedMode].maxMarks && state.game.history[mark]?.[0] === index &&
+      state.game.history[mark]?.length === MODES[state.selectedMode].maxMarks;
+    return `<button class="cell ${mark?.toLowerCase() || ""} ${state.game.winLine.includes(index) ? "win" : ""} ${fading ? "fading" : ""} ${index === lastIndex ? "just-played" : ""}"
+      data-index="${index}" ${mark || !canPlay() ? "disabled" : ""} aria-label="${index + 1}번 칸">${mark === "X" ? "×" : mark === "O" ? "○" : ""}</button>`;
+  }).join("");
+  els.board.querySelectorAll(".cell").forEach((cell) => cell.addEventListener("click", () => makeMove(Number(cell.dataset.index))));
+}
 
-  if (result.winner === "draw") {
-    return { score: 0 };
-  }
+function renderStatus() {
+  const game = state.game;
+  const connected = state.practice || state.peers.size > 0;
+  els.round.textContent = `ROUND ${String(state.round).padStart(2, "0")}`;
+  els.playerX.classList.toggle("active", !game.winner && game.turn === "X");
+  els.playerO.classList.toggle("active", !game.winner && game.turn === "O");
+  els.stateX.textContent = game.turn === "X" && !game.winner ? "차례" : "";
+  els.stateO.textContent = game.turn === "O" && !game.winner ? "차례" : "";
 
-  let best = { score: isMaximizing ? -Infinity : Infinity, move: null };
+  if (!connected) els.status.textContent = "친구를 기다리고 있습니다";
+  else if (!state.myRole) els.status.textContent = "방이 가득 차 관전 중입니다";
+  else if (game.winner === "draw") els.status.textContent = "무승부 · 한 판 더?";
+  else if (game.winner) els.status.textContent = `${game.winner === state.myRole ? "승리했습니다" : "상대가 승리했습니다"}`;
+  else els.status.textContent = game.turn === state.myRole ? "당신의 차례입니다" : "상대의 차례입니다";
 
-  for (const move of availableMoves(board)) {
-    board[move] = isMaximizing ? "O" : "X";
-    const score = bestMove(board, !isMaximizing).score;
-    board[move] = null;
+  els.hint.textContent = !connected ? "초대 링크를 친구에게 보내세요" :
+    !state.myRole ? "이 방은 이미 두 명이 플레이 중입니다" :
+    game.winner ? "새 판 시작 버튼으로 다시 대결하세요" :
+    game.turn === state.myRole ? "빈 칸을 선택해 수를 두세요" : "상대의 수를 기다리는 중입니다";
+}
 
-    if (isMaximizing) {
-      if (score > best.score) {
-        best = { score, move };
+function syncRender(lastIndex = -1) {
+  renderBoard(lastIndex);
+  renderStatus();
+  startTurnTimer();
+}
+
+function makeMove(index, broadcast = true) {
+  if (!canPlay() || state.game.board[index]) return;
+  state.game = playMove(state.game, index);
+  beep(state.game.turn === "X" ? 640 : 440, .08);
+  syncRender(index);
+  if (broadcast && state.actions) state.actions.sendMove({ index, moveCount: state.game.moveCount - 1 });
+
+  if (state.practice && !state.game.winner) {
+    state.myRole = "X";
+    setTimeout(() => {
+      const computerIndex = findComputerMove(state.game);
+      if (computerIndex >= 0) {
+        state.game = playMove(state.game, computerIndex);
+        beep(380, .09);
+        syncRender(computerIndex);
       }
-    } else if (score < best.score) {
-      best = { score, move };
-    }
+    }, 480);
   }
-
-  return best;
 }
 
-function maybeComputerMove() {
-  if (state.mode !== "ai" || state.turn !== "O" || state.winner) {
-    return;
-  }
+function applyRemoteMove(index) {
+  if (state.game.winner || state.game.board[index] || state.game.turn === state.myRole) return;
+  state.game = playMove(state.game, index);
+  beep(state.game.turn === "X" ? 640 : 440, .08);
+  syncRender(index);
+}
 
-  state.locked = true;
-  render();
+function startTurnTimer() {
+  clearInterval(state.timerId);
+  if (!MODES[state.selectedMode].turnSeconds || state.game.winner || (!state.practice && !state.peers.size)) return;
+  state.turnEndsAt = Date.now() + MODES[state.selectedMode].turnSeconds * 1000;
+  state.timerValue.textContent = MODES[state.selectedMode].turnSeconds;
+  state.timerId = setInterval(() => {
+    const left = Math.max(0, Math.ceil((state.turnEndsAt - Date.now()) / 1000));
+    state.timerValue.textContent = left;
+    if (left === 0) {
+      clearInterval(state.timerId);
+      state.game = loseOnTime(state.game, state.game.turn);
+      renderBoard();
+      renderStatus();
+      if (state.actions) state.actions.sendTimeout({ player: state.game.winner === "X" ? "O" : "X", moveCount: state.game.moveCount });
+    }
+  }, 200);
+}
 
-  window.setTimeout(() => {
-    let move;
-    if (state.aiLevel === "easy") {
-      const moves = availableMoves(state.board);
-      move = moves[Math.floor(Math.random() * moves.length)];
+function showRoom() {
+  els.lobby.classList.add("hidden");
+  els.room.classList.remove("hidden");
+  els.roomCode.textContent = state.roomCode || "PRACTICE";
+  els.connection.textContent = state.practice ? "컴퓨터 상대 · 오프라인" : "상대를 기다리는 중...";
+  els.nameX.textContent = state.myRole === "X" ? "나" : state.practice ? "컴퓨터" : "친구";
+  els.nameO.textContent = state.myRole === "O" ? "나" : state.practice ? "컴퓨터" : "친구";
+}
+
+function resetGame(broadcast = true) {
+  state.game = createGame(state.selectedMode);
+  state.round += 1;
+  if (state.practice) state.myRole = "X";
+  syncRender();
+  if (broadcast && state.actions) state.actions.sendReset({ round: state.round });
+}
+
+function closeRoom() {
+  clearInterval(state.timerId);
+  state.room?.leave();
+  state.room = null;
+  state.actions = null;
+  state.peers.clear();
+  state.peerIds.clear();
+  state.roleReady = false;
+  state.practice = false;
+  state.roomCode = "";
+  state.round = 1;
+  setUrl();
+  els.room.classList.add("hidden");
+  els.lobby.classList.remove("hidden");
+  renderModes();
+}
+
+function updateRoles() {
+  const ids = [state.myId, ...state.peerIds.values()].sort();
+  const myIndex = ids.indexOf(state.myId);
+  state.myRole = myIndex === 0 ? "X" : myIndex === 1 ? "O" : null;
+  state.roleReady = ids.length > 1 && Boolean(state.myRole);
+  els.nameX.textContent = state.myRole === "X" ? "나" : "친구";
+  els.nameO.textContent = state.myRole === "O" ? "나" : "친구";
+  syncRender();
+}
+
+function joinOnline(roomCode, mode) {
+  setMode(mode);
+  state.roomCode = roomCode.toUpperCase();
+  state.practice = false;
+  setUrl(state.roomCode, state.selectedMode);
+  showRoom();
+
+  state.room = joinRoom(NETWORK_CONFIG, `room-${state.roomCode}`);
+  const [sendHello, getHello] = state.room.makeAction("hello");
+  const [sendMove, getMove] = state.room.makeAction("move");
+  const [sendReset, getReset] = state.room.makeAction("reset");
+  const [sendTimeout, getTimeout] = state.room.makeAction("timeout");
+  state.actions = { sendMove, sendReset, sendTimeout };
+
+  state.room.onPeerJoin((peerId) => {
+    state.peers.add(peerId);
+    els.connection.textContent = "친구 연결됨 · P2P 보안 연결";
+    sendHello({ id: state.myId, mode: state.selectedMode, game: state.game, round: state.round }, peerId);
+    renderStatus();
+  });
+  state.room.onPeerLeave((peerId) => {
+    state.peers.delete(peerId);
+    state.peerIds.delete(peerId);
+    els.connection.textContent = "친구 연결 끊김 · 재접속 대기 중";
+    if (state.peers.size > 0) {
+      updateRoles();
     } else {
-      move = bestMove([...state.board], true).move;
+      state.roleReady = false;
+      renderStatus();
+      renderBoard();
     }
-
-    state.locked = false;
-    if (typeof move === "number") {
-      applyMove(move, "O");
-    }
-  }, 320);
-}
-
-function bindEvents() {
-  els.modeButtons.forEach((btn) => {
-    btn.addEventListener("click", () => setMode(btn.dataset.mode));
   });
-
-  els.btnGenerate.addEventListener("click", () => {
-    els.roomCode.value = randomRoomCode();
+  getHello((data, peerId) => {
+    const isFirstHello = !state.peerIds.has(peerId);
+    if (isFirstHello) state.peerIds.set(peerId, data.id);
+    if (data.mode === state.selectedMode && data.game?.moveCount > state.game.moveCount) state.game = data.game;
+    updateRoles();
+    if (isFirstHello) sendHello({ id: state.myId, mode: state.selectedMode, game: state.game, round: state.round }, peerId);
   });
-
-  els.btnJoin.addEventListener("click", () => {
-    const code = normalizeRoomCode(els.roomCode.value);
-    if (!code) {
-      setStatus("유효한 룸 코드를 입력하세요.");
-      return;
-    }
-
-    els.roomCode.value = code;
-    connectRoom(code);
+  getMove((data) => {
+    if (data.moveCount !== state.game.moveCount || state.game.turn === state.myRole) return;
+    applyRemoteMove(data.index);
   });
-
-  els.btnQuick.addEventListener("click", () => {
-    startQuickMatch();
+  getReset((data) => {
+    state.round = data.round || state.round + 1;
+    state.game = createGame(state.selectedMode);
+    syncRender();
   });
-
-  els.btnLeave.addEventListener("click", () => {
-    stopQuickMatch();
-    disconnectRoom();
-    state.peerRole = null;
-    resetBoard(false);
-    render();
-  });
-
-  els.btnReset.addEventListener("click", () => {
-    resetBoard(true);
-  });
-
-  els.btnRematchSame.addEventListener("click", () => {
-    if (!state.rematch.active) {
-      maybeStartRematchVoting();
-    }
-
-    state.rematch.myVote = "same";
-    state.rematch.autoQuickAfterDisconnect = false;
-    if (sendMeta) {
-      sendMeta({ type: "rematch_vote", vote: "same" });
-    }
-    evaluateRematchAgreement();
-    render();
-  });
-
-  els.btnRematchNew.addEventListener("click", () => {
-    if (!state.rematch.active) {
-      maybeStartRematchVoting();
-    }
-
-    state.rematch.myVote = "new";
-    state.rematch.autoQuickAfterDisconnect = true;
-    if (sendMeta) {
-      sendMeta({ type: "rematch_vote", vote: "new" });
-    }
-    render();
-  });
-
-  els.aiLevel.addEventListener("change", () => {
-    state.aiLevel = els.aiLevel.value;
-    if (state.mode === "ai") {
-      resetBoard(false);
+  getTimeout((data) => {
+    if (data.moveCount === state.game.moveCount) {
+      state.game = loseOnTime(state.game, data.player);
+      syncRender();
     }
   });
 }
 
-function init() {
+function startPractice() {
+  setMode(state.selectedMode);
+  state.practice = true;
+  state.myRole = "X";
+  state.roleReady = true;
+  state.roomCode = "";
+  showRoom();
+  syncRender();
+}
+
+$("create-button").addEventListener("click", () => joinOnline(randomRoom(), state.selectedMode));
+$("practice-button").addEventListener("click", startPractice);
+$("back-button").addEventListener("click", closeRoom);
+$("brand-button").addEventListener("click", closeRoom);
+$("restart-button").addEventListener("click", () => resetGame());
+$("copy-button").addEventListener("click", async () => {
+  if (state.practice) return showToast("연습 모드는 초대할 수 없습니다");
   try {
-    state.clientId = createClientId();
-  } catch (err) {
-    disableOnlineWithError(err instanceof Error ? err.message : "초기화 실패");
-    return;
+    await navigator.clipboard.writeText(location.href);
+    showToast("초대 링크를 복사했습니다");
+  } catch {
+    showToast("주소창의 링크를 공유해주세요");
   }
+});
+$("sound-button").addEventListener("click", (event) => {
+  state.sound = !state.sound;
+  event.currentTarget.textContent = `SOUND ${state.sound ? "ON" : "OFF"}`;
+  beep(500);
+});
+window.addEventListener("popstate", closeRoom);
 
-  createBoard();
-  bindEvents();
-
-  els.roomCode.value = randomRoomCode();
-  state.aiLevel = els.aiLevel.value;
-
-  render();
-}
-
-init();
+renderModes();
+const params = new URLSearchParams(location.search);
+if (params.get("room")) joinOnline(params.get("room"), params.get("mode") || "classic");
